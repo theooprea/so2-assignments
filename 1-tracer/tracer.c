@@ -12,6 +12,10 @@
 #include <linux/miscdevice.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/types.h>
+#include <linux/kprobes.h>
+#include <linux/slab.h>
+#include <linux/rcupdate.h>
 
 #include "./tracer.h"
 
@@ -112,7 +116,7 @@ static int up_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 static struct kretprobe up_probe = {
    .entry_handler = up_probe_handler,
    .maxactive = 32,
-   .kp.symbol_name = UP_FUNC
+   .kp.symbol_name = "up"
 };
 
 static int tracer_cdev_init(void)
@@ -138,7 +142,7 @@ static int tracer_cdev_init(void)
 error_kretprobe_up:
 	misc_deregister(&tracer_miscdevice);
 error_misc_register:
-	proc_remove(&tracer_proc_read);
+	proc_remove(tracer_proc_read);
 
 	return err;
 }
@@ -146,7 +150,7 @@ error_misc_register:
 static void tracer_cdev_exit(void)
 {
 	misc_deregister(&tracer_miscdevice);
-	proc_remove(&tracer_proc_read);
+	proc_remove(tracer_proc_read);
 }
 
 module_init(tracer_cdev_init);

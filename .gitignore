@@ -3,7 +3,6 @@
 *.mod
 *.order
 *.zip
-./1-tracer/tracer_user
+1-tracer/tracer_user
 *.mod*
 *.o
-./1-tracer/tracer_user
