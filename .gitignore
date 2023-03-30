@@ -6,3 +6,4 @@
 ./1-tracer/tracer_user
 *.mod*
 *.o
+./1-tracer/tracer_user

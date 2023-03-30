@@ -30,33 +30,30 @@ static void error(const char *message)
 
 static void usage(const char *argv0)
 {
-	printf("Usage: %s <options>\n options:\n"
-			"\tp - print\n"
-			"\ts string - set buffer\n"
-			"\tg - get buffer\n"
-			"\td - down\n"
-			"\tu - up\n"
-			"\tn - open with O_NONBLOCK and read data\n", argv0);
+	printf("Usage: %s <options> <PID>\n options:\n"
+			"\ta - add PID process to monitoring\n"
+			"\tr - remove PID process from monitoring\n", argv0);
 	exit(EXIT_FAILURE);
 }
 
 /*
  * Sample run:
- *  ./so2_cdev_test p		; print ioctl message
- *  ./so2_cdev_test d		; wait on wait_queue
- *  ./so2_cdev_test u		; wait on wait_queue
+ *  ./tracer_user a		; add process
+ *  ./tracer_user r		; remove process
  */
 
 int main(int argc, char **argv)
 {
-	int fd;
+	int fd, pid;
 	char buffer[BUFFER_SIZE];
 
-	if (argc < 2)
+	if (argc < 3)
 		usage(argv[0]);
 
 	if (strlen(argv[1]) != 1)
 		usage(argv[0]);
+	
+	pid = atoi(argv[2]);
     
 	fd = open(DEVICE_PATH, O_RDONLY);
 	if (fd < 0) {
@@ -65,15 +62,15 @@ int main(int argc, char **argv)
 	}
 
 	switch (argv[1][0]) {
-	case 'a':				/* print */
-		if (ioctl(fd, TRACER_ADD_PROCESS, 0) < 0) {
+	case 'a':				/* add process */
+		if (ioctl(fd, TRACER_ADD_PROCESS, &pid) < 0) {
 			perror("ioctl");
 			exit(EXIT_FAILURE);
 		}
 
 		break;
-	case 'r':				/* set buffer */
-		if (ioctl(fd, TRACER_REMOVE_PROCESS, 0) < 0) {
+	case 'r':				/* remove process */
+		if (ioctl(fd, TRACER_REMOVE_PROCESS, &pid) < 0) {
 			perror("ioctl");
 			exit(EXIT_FAILURE);
 		}
