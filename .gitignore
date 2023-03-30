@@ -1,0 +1,8 @@
+*.cmd
+*.ko
+*.mod
+*.order
+*.zip
+./1-tracer/tracer_user
+*.mod*
+*.o
