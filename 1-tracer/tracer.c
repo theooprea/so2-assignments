@@ -32,6 +32,57 @@ MODULE_LICENSE("GPL");
 #define BUFSIZ		4096
 #endif
 
+static LIST_HEAD(procs_list_head);
+
+struct procs_list_node {
+	pid_t pid;
+
+	struct list_head procs_list_node;
+};
+
+static struct procs_list_node *new_node(pid_t pid)
+{
+	struct procs_list_node *node;
+
+	/* Allocate memory for the node, if there is not enough, return NULL*/
+	node = kmalloc(sizeof(struct procs_list_node), GFP_KERNEL);
+	if (node == NULL)
+		return NULL;
+
+	node->pid = pid;
+
+	return node;
+}
+
+static int procs_list_add(pid_t pid) {
+	struct procs_list_node *node;
+
+	node = new_node(pid);
+	if (node == NULL)
+		return -ENOMEM;
+
+	list_add(&node->procs_list_node, &procs_list_head);
+
+	return 0;
+}
+
+static void procs_list_remove(pid_t pid) {
+	struct list_head *iterator, *backup;
+	struct procs_list_node *node;
+
+	list_for_each_safe(iterator, backup, &procs_list_head) {
+		node = list_entry(iterator, struct procs_list_node, procs_list_node);
+
+		if (node->pid == pid) {
+			list_del(iterator);
+
+			kfree(node);
+
+			return;
+		}
+	}
+}
+
 static int tracer_cdev_open(struct inode *inode, struct file *file)
 {
 	printk(LOG_LEVEL "open called!\n");
@@ -61,8 +112,18 @@ tracer_cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				return -EFAULT;
 			
 			printk(LOG_LEVEL "%s %d\n", IOCTL_MESSAGE, arg_pid);
+			ret = procs_list_add(arg_pid);
+
+			if (ret != 0)
+				return -EFAULT;
+
 			break;
 		case TRACER_REMOVE_PROCESS:
+			if( copy_from_user(&arg_pid, (pid_t *) arg,
+							sizeof(pid_t)) )
+				return -EFAULT;
+
+			procs_list_remove(arg_pid);
 			printk(LOG_LEVEL "%s %d\n", IOCTL_MESSAGE, arg_pid);
 			break;
 		default:
@@ -74,7 +135,16 @@ tracer_cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 static int tracer_proc_show(struct seq_file *m, void *v)
 {
-	seq_printf(m, "Starts printing\n");
+	struct procs_list_node *node;
+	struct list_head *iterator;
+
+	seq_printf(m, "PID\n");
+
+	list_for_each(iterator, &procs_list_head) {
+		node = list_entry(iterator, struct procs_list_node, procs_list_node);
+
+		seq_printf(m, "%d\n", node->pid);
+	}
 
 	return 0;
 }
@@ -108,7 +178,6 @@ static struct miscdevice tracer_miscdevice = {
 // Handlers section
 static int up_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-	printk("Handleing up func\n");
 	return 0;
 }
 
