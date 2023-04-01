@@ -506,8 +506,6 @@ static void tracer_exit(void)
 	struct procs_list_node *node_procs;
 	struct memory_areas_list_node *node_memory_areas;
 
-	unsigned long flags;
-
 	unregister_kretprobe(&up_probe);
 	unregister_kretprobe(&down_probe);
 	unregister_kretprobe(&lock_probe);
