@@ -26,7 +26,7 @@
 #include "helper.h"
 
 /* use this to enable stats debugging */
-#if 0
+#if 1
 #define DEBUG
 #endif
 

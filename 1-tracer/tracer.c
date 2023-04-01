@@ -25,15 +25,22 @@ MODULE_LICENSE("GPL");
 
 #define LOG_LEVEL	KERN_INFO
 
-#define MESSAGE			"tracer hello\n"
-#define IOCTL_MESSAGE		"tracer hello ioctl"
-
 #ifndef BUFSIZ
 #define BUFSIZ		4096
 #endif
 
 DEFINE_SPINLOCK(procs_lock);
 static LIST_HEAD(procs_list_head);
+static LIST_HEAD(memory_areas_list_head);
+
+struct memory_areas_list_node {
+	pid_t pid;
+
+	int address;
+	int size;
+
+	struct list_head memory_areas_list_node;
+};
 
 struct procs_list_node {
 	pid_t pid;
@@ -217,6 +224,22 @@ static struct miscdevice tracer_miscdevice = {
 };
 
 // Handlers section
+static int sched_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct procs_list_node *current_proc;
+
+	current_proc = procs_list_get(current->pid);
+
+	if (current_proc == NULL)
+		return -EINVAL;
+
+	spin_lock(&procs_lock);
+	current_proc->sched_no = current_proc->sched_no + 1;
+	spin_unlock(&procs_lock);
+
+	return 0;
+}
+
 static int up_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct procs_list_node *current_proc;
@@ -249,7 +272,117 @@ static int down_probe_handler(struct kretprobe_instance *ri, struct pt_regs *reg
 	return 0;
 }
 
+static int lock_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct procs_list_node *current_proc;
+
+	current_proc = procs_list_get(current->pid);
+
+	if (current_proc == NULL)
+		return -EINVAL;
+
+	spin_lock(&procs_lock);
+	current_proc->lock_no = current_proc->lock_no + 1;
+	spin_unlock(&procs_lock);
+
+	return 0;
+}
+
+static int unlock_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct procs_list_node *current_proc;
+
+	current_proc = procs_list_get(current->pid);
+
+	if (current_proc == NULL)
+		return -EINVAL;
+
+	spin_lock(&procs_lock);
+	current_proc->unlock_no = current_proc->unlock_no + 1;
+	spin_unlock(&procs_lock);
+
+	return 0;
+}
+
+static int kmalloc_entry_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct procs_list_node *current_proc;
+
+	current_proc = procs_list_get(current->pid);
+
+	if (current_proc == NULL)
+		return -EINVAL;
+
+	spin_lock(&procs_lock);
+	current_proc->kmalloc_no = current_proc->kmalloc_no + 1;
+	spin_unlock(&procs_lock);
+
+	*((int *)ri->data) = regs->ax;
+
+	return 0;
+}
+
+static int kmalloc_exit_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	int address;
+	struct procs_list_node *current_proc;
+	struct memory_areas_list_node *memory_area;
+
+	current_proc = procs_list_get(current->pid);
+
+	if (current_proc == NULL)
+		return -EINVAL;
+
+	address = regs_return_value(regs);
+	memory_area = kmalloc(sizeof(struct memory_areas_list_node), GFP_ATOMIC);
+	if (memory_area == NULL)
+		return -ENOMEM;
+
+	memory_area->pid = current->pid;
+	memory_area->address = address;
+	memory_area->size = *((int *)ri->data);
+
+	spin_lock(&procs_lock);
+	current_proc->kmalloc_mem = current_proc->kmalloc_mem + *((int *)ri->data);
+	list_add(&memory_area->memory_areas_list_node, &memory_areas_list_head);
+	spin_unlock(&procs_lock);
+
+	return 0;
+}
+
+static int kfree_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct list_head *iterator;
+	struct memory_areas_list_node *memory_area_node;
+	struct procs_list_node *current_proc;
+
+	current_proc = procs_list_get(current->pid);
+
+	if (current_proc == NULL)
+		return -EINVAL;
+
+	spin_lock(&procs_lock);
+	current_proc->kfree_no = current_proc->kfree_no + 1;
+
+	list_for_each(iterator, &memory_areas_list_head) {
+		memory_area_node = list_entry(iterator, struct memory_areas_list_node, memory_areas_list_node);
+
+		if (memory_area_node->pid == current->pid && memory_area_node->address == regs->ax)
+			current_proc->kfree_mem = current_proc->kfree_mem + memory_area_node->size;
+	}
+
+	spin_unlock(&procs_lock);
+
+	return 0;
+}
+
 // Kretprobes section
+static struct kretprobe sched_probe = {
+   .entry_handler = sched_probe_handler,
+   .maxactive = 32,
+   .kp.symbol_name = "schedule"
+};
+
 static struct kretprobe up_probe = {
    .entry_handler = up_probe_handler,
    .maxactive = 32,
@@ -262,7 +395,33 @@ static struct kretprobe down_probe = {
    .kp.symbol_name = "down_interruptible"
 };
 
-static int tracer_cdev_init(void)
+static struct kretprobe lock_probe = {
+   .entry_handler = lock_probe_handler,
+   .maxactive = 32,
+   .kp.symbol_name = "mutex_lock_nested"
+};
+
+static struct kretprobe unlock_probe = {
+   .entry_handler = unlock_probe_handler,
+   .maxactive = 32,
+   .kp.symbol_name = "mutex_unlock"
+};
+
+static struct kretprobe kmalloc_probe = {
+   .entry_handler = kmalloc_entry_probe_handler,
+   .handler = kmalloc_exit_probe_handler,
+   .data_size = sizeof(int),
+   .maxactive = 32,
+   .kp.symbol_name = "__kmalloc"
+};
+
+static struct kretprobe kfree_probe = {
+   .entry_handler = kfree_probe_handler,
+   .maxactive = 32,
+   .kp.symbol_name = "kfree"
+};
+
+static int tracer_init(void)
 {
 	int err;
 
@@ -276,6 +435,12 @@ static int tracer_cdev_init(void)
 	if (err != 0)
 		goto error_misc_register;
 
+	err = register_kretprobe(&sched_probe);
+	if (err) {
+		pr_err("Failure on register_kretprobe sched_probe\n");
+		goto error_kretprobe_sched;
+	}
+
 	err = register_kretprobe(&up_probe);
 	if (err) {
 		pr_err("Failure on register_kretprobe up_probe\n");
@@ -288,11 +453,46 @@ static int tracer_cdev_init(void)
 		goto error_kretprobe_down;
 	}
 
+	err = register_kretprobe(&lock_probe);
+	if (err) {
+		pr_err("Failure on register_kretprobe lock_probe\n");
+		goto error_kretprobe_lock;
+	}
+
+	err = register_kretprobe(&unlock_probe);
+	if (err) {
+		pr_err("Failure on register_kretprobe unlock_probe\n");
+		goto error_kretprobe_unlock;
+	}
+
+	err = register_kretprobe(&kmalloc_probe);
+	if (err) {
+		pr_err("Failure on register_kretprobe kmalloc_probe\n");
+		goto error_kretprobe_kmalloc;
+	}
+
+	err = register_kretprobe(&kfree_probe);
+	if (err) {
+		pr_err("Failure on register_kretprobe kfree_probe\n");
+		goto error_kretprobe_kfree;
+	}
+
 	return 0;
 
+error_kretprobe_kfree:
+	unregister_kretprobe(&kmalloc_probe);
+error_kretprobe_kmalloc:
+	unregister_kretprobe(&unlock_probe);
+error_kretprobe_unlock:
+	unregister_kretprobe(&lock_probe);
+error_kretprobe_lock:
+	unregister_kretprobe(&down_probe);
 error_kretprobe_down:
 	unregister_kretprobe(&up_probe);
 error_kretprobe_up:
+	misc_deregister(&tracer_miscdevice);
+	unregister_kretprobe(&sched_probe);
+error_kretprobe_sched:
 	misc_deregister(&tracer_miscdevice);
 error_misc_register:
 	proc_remove(tracer_proc_read);
@@ -300,27 +500,43 @@ error_misc_register:
 	return err;
 }
 
-static void tracer_cdev_exit(void)
+static void tracer_exit(void)
 {
 	struct list_head *iterator, *backup;
-	struct procs_list_node *node;
+	struct procs_list_node *node_procs;
+	struct memory_areas_list_node *node_memory_areas;
 
-	misc_deregister(&tracer_miscdevice);
-	proc_remove(tracer_proc_read);
+	unsigned long flags;
+
 	unregister_kretprobe(&up_probe);
 	unregister_kretprobe(&down_probe);
+	unregister_kretprobe(&lock_probe);
+	unregister_kretprobe(&unlock_probe);
+	unregister_kretprobe(&sched_probe);
+	unregister_kretprobe(&kmalloc_probe);
+	unregister_kretprobe(&kfree_probe);
+	misc_deregister(&tracer_miscdevice);
+	proc_remove(tracer_proc_read);
 
 	list_for_each_safe(iterator, backup, &procs_list_head) {
-		node = list_entry(iterator, struct procs_list_node, procs_list_node);
+		node_procs = list_entry(iterator, struct procs_list_node, procs_list_node);
 
 		list_del(iterator);
 
-		kfree(node);
+		kfree(node_procs);
+	}
+
+	list_for_each_safe(iterator, backup, &memory_areas_list_head) {
+		node_memory_areas = list_entry(iterator, struct memory_areas_list_node, memory_areas_list_node);
+
+		list_del(iterator);
+
+		kfree(node_memory_areas);
 	}
 }
 
-module_init(tracer_cdev_init);
-module_exit(tracer_cdev_exit);
+module_init(tracer_init);
+module_exit(tracer_exit);
 
 MODULE_DESCRIPTION("Linux kprobe based tracer");
 MODULE_AUTHOR("Theodor-Alin Oprea <opreatheodor54@gmail.com>");
