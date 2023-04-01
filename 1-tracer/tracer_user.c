@@ -63,14 +63,14 @@ int main(int argc, char **argv)
 
 	switch (argv[1][0]) {
 	case 'a':				/* add process */
-		if (ioctl(fd, TRACER_ADD_PROCESS, &pid) < 0) {
+		if (ioctl(fd, TRACER_ADD_PROCESS, pid) < 0) {
 			perror("ioctl");
 			exit(EXIT_FAILURE);
 		}
 
 		break;
 	case 'r':				/* remove process */
-		if (ioctl(fd, TRACER_REMOVE_PROCESS, &pid) < 0) {
+		if (ioctl(fd, TRACER_REMOVE_PROCESS, pid) < 0) {
 			perror("ioctl");
 			exit(EXIT_FAILURE);
 		}
