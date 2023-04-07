@@ -98,7 +98,7 @@ static int procs_list_add(struct procs_list_node *node) {
 			return -EFAULT;
 	}
 
-	list_add(&node->procs_list_node, &procs_list_head);
+	list_add_rcu(&node->procs_list_node, &procs_list_head);
 
 	return 0;
 }
@@ -111,7 +111,7 @@ static struct procs_list_node *procs_list_remove(pid_t pid) {
 		node = list_entry(iterator, struct procs_list_node, procs_list_node);
 
 		if (node->pid == pid) {
-			list_del(iterator);
+			list_del_rcu(iterator);
 
 			return node;
 		}
@@ -121,12 +121,9 @@ static struct procs_list_node *procs_list_remove(pid_t pid) {
 }
 
 static struct procs_list_node *procs_list_get(pid_t pid) {
-	struct list_head *iterator, *backup;
 	struct procs_list_node *node;
 
-	list_for_each_safe(iterator, backup, &procs_list_head) {
-		node = list_entry(iterator, struct procs_list_node, procs_list_node);
-
+	list_for_each_entry_rcu(node, &procs_list_head, procs_list_node) {
 		if (node->pid == pid) {
 			return node;
 		}
@@ -166,8 +163,8 @@ tracer_cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			aux = procs_list_remove(arg);
 			spin_unlock(&procs_lock);
 
-			if (aux != NULL)
-				kfree(aux);
+			synchronize_rcu();
+			kfree(aux);
 
 			break;
 		default:
@@ -180,19 +177,17 @@ tracer_cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 static int tracer_proc_show(struct seq_file *m, void *v)
 {
 	struct procs_list_node *node;
-	struct list_head *iterator;
 
 	seq_printf(m, "PID kmalloc kfree kmalloc_mem kfree_mem sched up down lock unloc\n");
 
-	spin_lock(&procs_lock);
-	list_for_each(iterator, &procs_list_head) {
-		node = list_entry(iterator, struct procs_list_node, procs_list_node);
+	rcu_read_lock();
+	list_for_each_entry_rcu(node, &procs_list_head, procs_list_node) {
 
 		seq_printf(m, "%d %d %d %d %d %d %d %d %d %d\n", node->pid,
 			node->kmalloc_no, node->kfree_no, node->kmalloc_mem, node->kfree_mem,
 			node->sched_no, node->up_no, node->down_no, node->lock_no, node->unlock_no);
 	}
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -228,14 +223,16 @@ static int sched_probe_handler(struct kretprobe_instance *ri, struct pt_regs *re
 {
 	struct procs_list_node *current_proc;
 
+	rcu_read_lock();
 	current_proc = procs_list_get(current->pid);
 
-	if (current_proc == NULL)
+	if (current_proc == NULL) {
+		spin_unlock(&procs_lock);
 		return -EINVAL;
+	}
 
-	spin_lock(&procs_lock);
 	current_proc->sched_no = current_proc->sched_no + 1;
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -244,14 +241,16 @@ static int up_probe_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct procs_list_node *current_proc;
 
+	rcu_read_lock();
 	current_proc = procs_list_get(current->pid);
 
-	if (current_proc == NULL)
+	if (current_proc == NULL) {
+		spin_unlock(&procs_lock);
 		return -EINVAL;
+	}
 
-	spin_lock(&procs_lock);
 	current_proc->up_no = current_proc->up_no + 1;
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -260,14 +259,16 @@ static int down_probe_handler(struct kretprobe_instance *ri, struct pt_regs *reg
 {
 	struct procs_list_node *current_proc;
 
+	rcu_read_lock();
 	current_proc = procs_list_get(current->pid);
 
-	if (current_proc == NULL)
+	if (current_proc == NULL) {
+		spin_unlock(&procs_lock);
 		return -EINVAL;
+	}
 
-	spin_lock(&procs_lock);
 	current_proc->down_no = current_proc->down_no + 1;
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -276,14 +277,16 @@ static int lock_probe_handler(struct kretprobe_instance *ri, struct pt_regs *reg
 {
 	struct procs_list_node *current_proc;
 
+	rcu_read_lock();
 	current_proc = procs_list_get(current->pid);
 
-	if (current_proc == NULL)
+	if (current_proc == NULL) {
+		spin_unlock(&procs_lock);
 		return -EINVAL;
+	}
 
-	spin_lock(&procs_lock);
 	current_proc->lock_no = current_proc->lock_no + 1;
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -292,14 +295,16 @@ static int unlock_probe_handler(struct kretprobe_instance *ri, struct pt_regs *r
 {
 	struct procs_list_node *current_proc;
 
+	rcu_read_lock();
 	current_proc = procs_list_get(current->pid);
 
-	if (current_proc == NULL)
+	if (current_proc == NULL) {
+		spin_unlock(&procs_lock);
 		return -EINVAL;
+	}
 
-	spin_lock(&procs_lock);
 	current_proc->unlock_no = current_proc->unlock_no + 1;
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -308,14 +313,16 @@ static int kmalloc_entry_probe_handler(struct kretprobe_instance *ri, struct pt_
 {
 	struct procs_list_node *current_proc;
 
+	rcu_read_lock();
 	current_proc = procs_list_get(current->pid);
 
-	if (current_proc == NULL)
+	if (current_proc == NULL) {
+		spin_unlock(&procs_lock);
 		return -EINVAL;
+	}
 
-	spin_lock(&procs_lock);
 	current_proc->kmalloc_no = current_proc->kmalloc_no + 1;
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	*((int *)ri->data) = regs->ax;
 
@@ -328,24 +335,28 @@ static int kmalloc_exit_probe_handler(struct kretprobe_instance *ri, struct pt_r
 	struct procs_list_node *current_proc;
 	struct memory_areas_list_node *memory_area;
 
+	rcu_read_lock();
 	current_proc = procs_list_get(current->pid);
 
-	if (current_proc == NULL)
+	if (current_proc == NULL) {
+		spin_unlock(&procs_lock);
 		return -EINVAL;
+	}
 
 	address = regs_return_value(regs);
 	memory_area = kmalloc(sizeof(struct memory_areas_list_node), GFP_ATOMIC);
-	if (memory_area == NULL)
+	if (memory_area == NULL) {
+		spin_unlock(&procs_lock);
 		return -ENOMEM;
+	}
 
 	memory_area->pid = current->pid;
 	memory_area->address = address;
 	memory_area->size = *((int *)ri->data);
 
-	spin_lock(&procs_lock);
 	current_proc->kmalloc_mem = current_proc->kmalloc_mem + *((int *)ri->data);
 	list_add(&memory_area->memory_areas_list_node, &memory_areas_list_head);
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -356,12 +367,14 @@ static int kfree_probe_handler(struct kretprobe_instance *ri, struct pt_regs *re
 	struct memory_areas_list_node *memory_area_node;
 	struct procs_list_node *current_proc;
 
+	rcu_read_lock();
 	current_proc = procs_list_get(current->pid);
 
-	if (current_proc == NULL)
+	if (current_proc == NULL) {
+		spin_unlock(&procs_lock);
 		return -EINVAL;
+	}
 
-	spin_lock(&procs_lock);
 	current_proc->kfree_no = current_proc->kfree_no + 1;
 
 	list_for_each(iterator, &memory_areas_list_head) {
@@ -371,7 +384,7 @@ static int kfree_probe_handler(struct kretprobe_instance *ri, struct pt_regs *re
 			current_proc->kfree_mem = current_proc->kfree_mem + memory_area_node->size;
 	}
 
-	spin_unlock(&procs_lock);
+	rcu_read_unlock();
 
 	return 0;
 }
