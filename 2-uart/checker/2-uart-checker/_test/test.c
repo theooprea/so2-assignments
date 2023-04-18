@@ -106,6 +106,7 @@ make_nodes(void)
 	mknod(UART0, S_IFCHR, COM1_MAJOR<<8);
 	mknod(UART1, S_IFCHR, (COM2_MAJOR<<8) + 1);
 	mknod(UART10, S_IFCHR, (UART16550_MAJOR<<8)+10);
+	printf("Made nodes\n");
 }
 
 static void
@@ -114,6 +115,7 @@ remove_nodes(void)
 	unlink(UART0);
 	unlink(UART1);
 	unlink(UART10);
+	printf("Removed nodes\n");
 }
 
 static float

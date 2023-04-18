@@ -8,3 +8,4 @@
 *.o
 diff/*
 official/*
+*.png
