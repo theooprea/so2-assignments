@@ -36,6 +36,8 @@
 #define SPR_OFFSET 7
 
 #define DR_BIT_INDEX 0
+#define ERDAI_BIT_INDEX 0
+#define MCR_OUT_1_BIT_INDEX 2
 #define THRE_BIT_INDEX 5
 #define DLAB_BIT_INDEX 7
 #define IIR_READ_BIT_INDEX 2
@@ -281,6 +283,7 @@ uart_interrupt_handle(int irq_no, void *dev_id)
 static int uart_init(void)
 {
     int err;
+    unsigned int ier_value, mcr_value;
 
     err = 0;
 
@@ -303,9 +306,6 @@ static int uart_init(void)
         INIT_KFIFO(devs[0].read_fifo_buffer);
         INIT_KFIFO(devs[0].write_fifo_buffer);
 
-        cdev_init(&devs[0].cdev, &uart_fops);
-		cdev_add(&devs[0].cdev, MKDEV(major, 0), 1);
-
         err = request_irq(COM1_IRQ_NO,
 			uart_interrupt_handle,
 			IRQF_SHARED, MODULE_NAME, &devs[0]);
@@ -317,6 +317,13 @@ static int uart_init(void)
 
         com1_requested_irq = 1;
 
+        cdev_init(&devs[0].cdev, &uart_fops);
+		cdev_add(&devs[0].cdev, MKDEV(major, 0), 1);
+
+        ier_value = 1 << ERDAI_BIT_INDEX;
+        outb(ier_value, COM1_ADDRESS + IER_OFFSET);
+        mcr_value = 1 << MCR_OUT_1_BIT_INDEX;
+        outb(mcr_value, COM1_ADDRESS + MCR_OFFSET);
     } else if (option == OPTION_COM2) {
         err = register_chrdev_region(MKDEV(major, 1),
 			1, MODULE_NAME);
@@ -336,9 +343,6 @@ static int uart_init(void)
         INIT_KFIFO(devs[1].read_fifo_buffer);
         INIT_KFIFO(devs[1].write_fifo_buffer);
 
-        cdev_init(&devs[1].cdev, &uart_fops);
-		cdev_add(&devs[1].cdev, MKDEV(major, 1), 1);
-
         err = request_irq(COM2_IRQ_NO,
 			uart_interrupt_handle,
 			IRQF_SHARED, MODULE_NAME, &devs[1]);
@@ -350,6 +354,13 @@ static int uart_init(void)
 
         com2_requested_irq = 1;
 
+        cdev_init(&devs[1].cdev, &uart_fops);
+		cdev_add(&devs[1].cdev, MKDEV(major, 1), 1);
+
+        ier_value = 1 << ERDAI_BIT_INDEX;
+        outb(ier_value, COM2_ADDRESS + IER_OFFSET);
+        mcr_value = 1 << MCR_OUT_1_BIT_INDEX;
+        outb(mcr_value, COM2_ADDRESS + MCR_OFFSET);
     } else if (option == OPTION_BOTH) {
         err = register_chrdev_region(MKDEV(major, 0),
 			2, MODULE_NAME);
@@ -369,8 +380,24 @@ static int uart_init(void)
         INIT_KFIFO(devs[0].read_fifo_buffer);
         INIT_KFIFO(devs[0].write_fifo_buffer);
 
+        err = request_irq(COM1_IRQ_NO,
+			uart_interrupt_handle,
+			IRQF_SHARED, MODULE_NAME, &devs[0]);
+
+        if (err != 0) {
+            pr_err("request_irq failed: %d\n", err);
+            goto request_irq_error;
+        }
+
+        com1_requested_irq = 1;
+
         cdev_init(&devs[0].cdev, &uart_fops);
 		cdev_add(&devs[0].cdev, MKDEV(major, 0), 1);
+
+        ier_value = 1 << ERDAI_BIT_INDEX;
+        outb(ier_value, COM1_ADDRESS + IER_OFFSET);
+        mcr_value = 1 << MCR_OUT_1_BIT_INDEX;
+        outb(mcr_value, COM1_ADDRESS + MCR_OFFSET);
 
         if (request_region(COM2_ADDRESS, COM_ADDRESSES_NO, MODULE_NAME) == NULL) {
             err = -EBUSY;
@@ -387,20 +414,6 @@ static int uart_init(void)
         INIT_KFIFO(devs[1].read_fifo_buffer);
         INIT_KFIFO(devs[1].write_fifo_buffer);
 
-        cdev_init(&devs[1].cdev, &uart_fops);
-		cdev_add(&devs[1].cdev, MKDEV(major, 1), 1);
-
-        err = request_irq(COM1_IRQ_NO,
-			uart_interrupt_handle,
-			IRQF_SHARED, MODULE_NAME, &devs[0]);
-
-        if (err != 0) {
-            pr_err("request_irq failed: %d\n", err);
-            goto request_irq_error;
-        }
-
-        com1_requested_irq = 1;
-
         err = request_irq(COM2_IRQ_NO,
 			uart_interrupt_handle,
 			IRQF_SHARED, MODULE_NAME, &devs[1]);
@@ -411,6 +424,14 @@ static int uart_init(void)
         }
 
         com2_requested_irq = 1;
+
+        cdev_init(&devs[1].cdev, &uart_fops);
+		cdev_add(&devs[1].cdev, MKDEV(major, 1), 1);
+
+        ier_value = 1 << ERDAI_BIT_INDEX;
+        outb(ier_value, COM2_ADDRESS + IER_OFFSET);
+        mcr_value = 1 << MCR_OUT_1_BIT_INDEX;
+        outb(mcr_value, COM2_ADDRESS + MCR_OFFSET);
     } else {
         pr_err("Invalid option\n");
         err = -EINVAL;
@@ -424,13 +445,6 @@ static int uart_init(void)
 	return 0;
 
 request_irq_error:
-    if (com1_requested_irq) {
-	    free_irq(COM1_IRQ_NO, &devs[0]);
-    }
-
-    if (com2_requested_irq) {
-	    free_irq(COM2_IRQ_NO, &devs[1]);
-    }
 
 request_region_error:
     if (option == OPTION_COM1) {
@@ -441,6 +455,7 @@ request_region_error:
         unregister_chrdev_region(MKDEV(major, 0), 2);
     }
 
+register_chrdev_region_error:
     if (com1_requested_region) {
         release_region(COM1_ADDRESS, COM_ADDRESSES_NO);
     }
@@ -449,7 +464,13 @@ request_region_error:
         release_region(COM2_ADDRESS, COM_ADDRESSES_NO);
     }
 
-register_chrdev_region_error:
+    if (com1_requested_irq) {
+	    free_irq(COM1_IRQ_NO, &devs[0]);
+    }
+
+    if (com2_requested_irq) {
+	    free_irq(COM2_IRQ_NO, &devs[1]);
+    }
 
     return err;
 }
