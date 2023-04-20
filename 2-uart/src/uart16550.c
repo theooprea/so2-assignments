@@ -36,6 +36,7 @@
 #define SPR_OFFSET 7
 
 #define DR_BIT_INDEX 0
+#define THRE_BIT_INDEX 5
 #define DLAB_BIT_INDEX 7
 #define IIR_READ_BIT_INDEX 2
 #define IIR_WRITE_BIT_INDEX 1
@@ -94,9 +95,9 @@ uart_cdev_read(struct file *file,
 		char __user *user_buffer,
 		size_t size, loff_t *offset)
 {
-	ssize_t to_read, available_in_kfifo;
     int com_address;
-    char buff[BUFFER_SIZE];
+    char buffer_aux[BUFFER_SIZE];
+	ssize_t read_count, available_in_kfifo;
     unsigned char ier_value;
     struct uart_com_device *data;
 
@@ -109,20 +110,18 @@ uart_cdev_read(struct file *file,
 
     available_in_kfifo = kfifo_len(&data->read_fifo_buffer);
     
-    to_read = available_in_kfifo < size ? available_in_kfifo : size;
+    read_count = available_in_kfifo < size ? available_in_kfifo : size;
 
-    kfifo_out(&data->read_fifo_buffer, buff, to_read);
+    kfifo_out(&data->read_fifo_buffer, buffer_aux, read_count);
 
-    if (copy_to_user(user_buffer, buff, to_read)) {
-		printk("Read - copy data to user error\n");
+    if (copy_to_user(user_buffer, buffer_aux, read_count * sizeof(char)))
 		return -EFAULT;
-	}
 
     ier_value = inb(com_address + IER_OFFSET);
     ier_value |= (1 << IER_RECEIVE_INTERRUPT_ENABLE_BIT_INDEX);
     outb(ier_value, com_address + IER_OFFSET);
 
-    return to_read;
+    return read_count;
 }
 
 static ssize_t
@@ -130,7 +129,33 @@ uart_cdev_write(struct file *file,
 		const char __user *user_buffer,
 		size_t size, loff_t *offset)
 {
-    return size;
+    int com_address;
+    char buffer_aux[BUFFER_SIZE];
+	ssize_t write_count, available_in_kfifo;
+    unsigned char ier_value;
+    struct uart_com_device *data;
+
+    data = (struct uart_com_device *) file->private_data;
+    com_address = data->uart_com_no == 0 ? COM1_ADDRESS : COM2_ADDRESS;
+
+    available_in_kfifo = kfifo_avail(&data->write_fifo_buffer);
+
+    write_count = available_in_kfifo < size ? available_in_kfifo : size;
+
+    if (copy_from_user(buffer_aux, user_buffer, write_count * sizeof(char)) != 0)
+		return -EFAULT;
+
+    kfifo_in(&data->write_fifo_buffer, buffer_aux, write_count * sizeof(char));
+
+    ier_value = inb(com_address + IER_OFFSET);
+    ier_value |= (1 << IER_TRANSMIT_INTERRUPT_ENABLE_BIT_INDEX);
+    outb(ier_value, com_address + IER_OFFSET);
+
+    if (wait_event_interruptible(data->tx_work_queue,
+        atomic_cmpxchg(&data->write_access, 1, 0)))
+			return -ERESTARTSYS;
+
+    return write_count;
 }
 
 static long
@@ -189,7 +214,7 @@ uart_interrupt_handle(int irq_no, void *dev_id)
 {
     int com_address;
     unsigned char iir_value, ier_value, lsr_value, read_bit_value,
-        write_bit_value, data_ready, read_byte_value;
+        write_bit_value, data_ready, thre_value, rx_byte_value, tx_byte_value;
     struct uart_com_device *data;
 
     data = (struct uart_com_device *)dev_id;
@@ -200,7 +225,7 @@ uart_interrupt_handle(int irq_no, void *dev_id)
     write_bit_value = iir_value & (1 << IIR_WRITE_BIT_INDEX);
 
     if (read_bit_value != 0) {
-        /* turn interrupts off */
+        /* turn read interrupts off */
         ier_value = inb(com_address + IER_OFFSET);
         ier_value &= ~(1 << IER_RECEIVE_INTERRUPT_ENABLE_BIT_INDEX);
         outb(ier_value, com_address + IER_OFFSET);
@@ -214,9 +239,9 @@ uart_interrupt_handle(int irq_no, void *dev_id)
          * the read bytes to the buffer
          */
         while (!kfifo_is_full(&data->read_fifo_buffer) && data_ready) {
-            read_byte_value = inb(com_address + RBR_OFFSET);
+            rx_byte_value = inb(com_address + RBR_OFFSET);
             
-            kfifo_in(&data->read_fifo_buffer, &read_byte_value, sizeof(unsigned char));
+            kfifo_in(&data->read_fifo_buffer, &rx_byte_value, sizeof(unsigned char));
             
             lsr_value = inb(com_address + LSR_OFFSET);
             data_ready = lsr_value & (1 << DR_BIT_INDEX);
@@ -226,9 +251,28 @@ uart_interrupt_handle(int irq_no, void *dev_id)
         atomic_set(&data->read_access, 1);
         wake_up_interruptible(&data->rx_work_queue);
     } else if (write_bit_value != 0) {
+        /* turn write interrupts off */
+        ier_value = inb(com_address + IER_OFFSET);
+        ier_value &= ~(1 << IER_TRANSMIT_INTERRUPT_ENABLE_BIT_INDEX);
+        outb(ier_value, com_address + IER_OFFSET);
 
+        lsr_value = inb(com_address + LSR_OFFSET);
+        thre_value = lsr_value & (1 << THRE_BIT_INDEX);
+
+        while(!kfifo_is_empty(&data->write_fifo_buffer) && thre_value) {
+            kfifo_out(&data->write_fifo_buffer, &tx_byte_value, sizeof(unsigned char));
+
+            outb(tx_byte_value, com_address + THR_OFFSET);
+
+            lsr_value = inb(com_address + LSR_OFFSET);
+            thre_value = lsr_value & (1 << THRE_BIT_INDEX);
+        }
+
+        /* signal that data can be written */
+        atomic_set(&data->write_access, 1);
+        wake_up_interruptible(&data->tx_work_queue);
     } else {
-        printk("Neither read nor write on uart_interrupt_handle\n");
+        pr_debug("Neither read nor write on uart_interrupt_handle\n");
     }
 
 	return IRQ_HANDLED;
